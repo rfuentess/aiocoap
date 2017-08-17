@@ -25,6 +25,15 @@ the examples_ and tools_ provided. All the details are in the
 All examples can be run directly from a source code copy. If you prefer to
 install it, the usual Python mechanisms apply (see installation_).
 
+tinyDTLS
+--------------------
+
+This modified version of aiocoap overrides normal CoAP server by a CoAPS
+server. This is far from the original project, and thus will be modified
+in the future.
+
+** THIS IS A BETA VERSION **
+
 Features / Standards
 --------------------
 

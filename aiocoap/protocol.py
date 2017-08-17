@@ -528,7 +528,7 @@ class Context(interfaces.RequestProvider):
 
     @classmethod
     @asyncio.coroutine
-    def create_server_context(cls, site, bind=("::", COAP_PORT), *, dump_to=None, loggername="coap-server", loop=None):
+    def create_server_context(cls, site, bind=("::", COAP_PORT), *, dump_to=None, loggername="coap-server", loop=None, secure=False):
         """Create an context, bound to all addresses on the CoAP port (unless
         otherwise specified in the ``bind`` argument).
 
@@ -542,7 +542,10 @@ class Context(interfaces.RequestProvider):
 
         from .transports.udp6 import TransportEndpointUDP6
 
-        self.transport_endpoints.append((yield from TransportEndpointUDP6.create_server_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to, bind=bind)))
+        self.transport_endpoints.append((yield from TransportEndpointUDP6.create_server_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to, bind=bind, secure=secure)))
+
+        # FIXME Append  a DTLS endpoint (only when secure is set to true)
+
 
         return self
 
@@ -705,7 +708,7 @@ class Request(BaseRequest, interfaces.Request):
         """Process incoming response with regard to Block1 option."""
 
         if response.opt.block1 is None:
-            # it's not up to us here to 
+            # it's not up to us here to
             if response.code.is_successful(): # an error like "unsupported option" would be ok to return, but success?
                 self.log.warning("Block1 option completely ignored by server, assuming it knows what it is doing.")
             self.process_block2_in_response(response)
@@ -917,7 +920,6 @@ class Responder(object):
         self._exchange_monitor_factory = exchange_monitor_factory
 
         self._next_block_timeout = None
-
         asyncio.Task(self.dispatch_request(request))
 
     def handle_next_request(self, request):

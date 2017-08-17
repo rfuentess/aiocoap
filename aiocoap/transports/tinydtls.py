@@ -37,6 +37,9 @@ from DTLSSocket import dtls
 # tinyDTLS passes address information around in its session data, but the way
 # it's used here that will be ignored; this is the data that is sent to / read
 # from the tinyDTLS functions
+#FIXME(rfuentess) WARNING: This is provoking chaos in tinyDTLS machine state.
+# The session data is used for generating context permiting multiples dtls peers
+# at the same time.
 _SENTINEL_ADDRESS = "::1"
 _SENTINEL_PORT = 1234
 
@@ -82,6 +85,7 @@ class DTLSClientConnection:
     @classmethod
     @asyncio.coroutine
     def start(cls, host, port, pskId, psk, main):
+        print("RAFS: (DTLS) Client start  arranca ")
         transport, self = yield from main.loop.create_datagram_endpoint(cls,
                 remote_addr=(host, port),
                 )
@@ -89,6 +93,9 @@ class DTLSClientConnection:
         self.main = main
 
         self._transport = transport
+
+        dtls.setLogLevel(dtls.DTLS_LOG_NOTICE)
+        print("RAFS: TinyDTLS Log level ",dtls.dtlsGetLogLevel() )
 
         self._dtls_socket = dtls.DTLS(
                 read=self._read,
@@ -111,11 +118,11 @@ class DTLSClientConnection:
 
     def _read(self, sender, data):
         # ignoring sender: it's only _SENTINEL_*
-
+        print("_red del cliente")
         try:
             message = Message.decode(data, self)
         except error.UnparsableMessage:
-            self.log.warning("Ignoring unparsable message from %s"%(address,))
+            self.log.warning("Client Ignoring unparsable message from %s"%(address,))
             return
 
         self.main.new_message_callback(message)
@@ -123,6 +130,7 @@ class DTLSClientConnection:
         return len(data)
 
     def _write(self, recipient, data):
+        print("DTLS Client _write")
         # ignoring recipient: it's only _SENTINEL_*
         try:
             t = self._transport
@@ -153,6 +161,7 @@ class DTLSClientConnection:
     # transport protocol
 
     def connection_made(self, transport):
+        print("RAFS: DTLS Client connection_made")
         pass # already handled in .start()
 
     def connection_lost(self, exc):
@@ -168,18 +177,27 @@ class DTLSClientConnection:
             # FIXME shut down immediately
 
     def datagram_received(self, data, addr):
+        print("RAFS DTLS Client datagram_received")
         self._dtls_socket.handleMessage(self._connection, data)
 
+from ..util.asyncio import RecvmsgDatagramProtocol
+
 class TransportEndpointTinyDTLS(interfaces.TransportEndpoint):
-    def __init__(self, new_message_callback, new_error_callback, log, loop):
+    def __init__(self, new_message_callback, new_error_callback, log, loop, bind=None):
+
+        print("RAFS: (init) TransportEndpointTinyDTLS starting...")
         self._pool = weakref.WeakValueDictionary({}) # see _connection_for_address
 
         self.new_message_callback = new_message_callback
         self.new_error_callback = new_error_callback
         self.log = log
         self.loop = loop
-
         self.security = DTLSSecurityStore()
+
+        #RAFS testing
+        self.ready = asyncio.Future() #: Future that gets fullfilled by connection_made (ie. don't send before this is done; handled by ``create_..._context``
+
+        print("RAFS: dtls_init_ listo")
 
     @asyncio.coroutine
     def _connection_for_address(self, host, port, pskId, psk):
@@ -187,26 +205,55 @@ class TransportEndpointTinyDTLS(interfaces.TransportEndpoint):
         the same result for the same host/port combination, at least for as
         long as that result is kept alive (eg. by messages referring to it in
         their .remote)."""
-
+        print("RAFS: DTLS _connection_for_address ")
         try:
             return self._pool[(host, port, pskId)]
+            print("RAFS: _connection_for_address non exception")
         except KeyError:
             # FIXME this would need locking so it's bad design
+            print("RAFS: _connection_for_address a punto de iniciar ");
             connection = yield from DTLSClientConnection.start(host, port, pskId, psk, self)
             self._pool[(host, port, pskId)] = connection
             return connection
 
+
+    # @classmethod
+    # @asyncio.coroutine
+    # def _create_transport_endpoint
+
     @classmethod
     @asyncio.coroutine
     def create_client_transport_endpoint(cls, new_message_callback, new_error_callback, log, loop, dump_to):
+        print("RAFS  Creating the client EP")
         if dump_to is not None:
             self.error("Ignoring dump_to in tinyDTLS transport endpoint")
-        return cls(new_message_callback, new_error_callback, log, loop)
+        print("RAFS: Client EP done?")
+        return cls (new_message_callback, new_error_callback, log, loop)
+
+    @classmethod
+    @asyncio.coroutine
+    def create_server_transport_endpoint(cls, new_message_callback, new_error_callback,
+                                         log, loop, dump_to, bind):
+        print("RAFS: Creating the server EP")
+
+        #FIXME If COAPS_PORT is not used then nothing must be done.
+        # b /home/rfuentess/Projects/aiocoap/aiocoap/transports/tinydtls.py:244
+        if dump_to is not None:
+            print("RAFS: create_server_transport_endpoint dump_to is not None")
+            self.error("Ignoring dump_to in tinyDTLS transport endpoint")
+
+        # return result2
+        return (cls(new_message_callback, new_error_callback, log, loop, bind))
+
 
     @asyncio.coroutine
     def determine_remote(self, request):
+        print("RAFS: DTLS determine_remote starting")
         if request.requested_scheme != 'coaps':
+            print("RAFS: No coaps ")
             return None
+        else:
+            print("RAFS: coaps habilitado!!")
 
         if request.unresolved_remote:
             pseudoparsed = urllib.parse.SplitResult(None, request.unresolved_remote, None, None, None)
@@ -230,3 +277,148 @@ class TransportEndpointTinyDTLS(interfaces.TransportEndpoint):
         remaining_connections = list(self._pool.values())
         for c in remaining_connections:
             c.shutdown()
+
+    @asyncio.coroutine
+    def datagram_msg_received(self, data, ancdata, flags, address):
+        print("RAFS: DTLS datagram_msg_received AJA! ")
+        pktinfo = None
+        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+            if cmsg_level == socket.IPPROTO_IPV6 and cmsg_type == socket.IPV6_PKTINFO:
+                pktinfo = cmsg_data
+            else:
+                self.log.info("Received unexpected ancillary data to recvmsg: level %d, type %d, data %r", cmsg_level, cmsg_type, cmsg_data)
+        try:
+            message = Message.decode(data, UDP6EndpointAddress(address, pktinfo=pktinfo))
+        except error.UnparsableMessage:
+            self.log.warning("Ignoring unparsable message from %s"%(address,))
+            return
+
+        self.new_message_callback(message)
+
+class DTLSServerListening(asyncio.Protocol):
+    # Temporary patch for creating a (tiny)DTLS Server
+
+    is_multicast = False
+
+    def send(self, message):
+        self._dtls_socket.write(self._connection, message)
+
+    log = property(lambda self: self.main.log)
+
+    @classmethod
+    @asyncio.coroutine
+    def start(cls, host, port, pskId, psk, bind, main, ):
+        print("RAFS start del server")
+
+        transport, self = yield from main.loop.create_datagram_endpoint(cls,
+                remote_addr=(host, port),
+                )
+        # break /home/rfuentess/Projects/aiocoap/aiocoap/transports/tinydtls.py:331
+        print("RAFS create create_datagram_endpoint is over")
+        self.main = main
+
+        self._transport = transport
+
+        dtls.setLogLevel(dtls.DTLS_LOG_DEBUG)
+        print("RAFS: TinyDTLS Log level ",dtls.dtlsGetLogLevel() )
+
+        self._dtls_socket = dtls.DTLS(
+                read=self._read,
+                write=self._write,
+                event=self._event,
+                pskId=pskId,
+                pskStore={pskId: psk},
+                )
+
+
+        # Requires breakpoint
+        # Now is to put in listen mode
+        sock = transport._sock
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(bind)
+
+        return (yield from self.ready)
+
+        # return self
+
+    def connection_made(self, transport):
+        print("RAFS: DTLS Server connection_made")
+        pass # already handled in .start()
+
+    def shutdown(self):
+        self._dtls_socket.close(self._connection)
+
+    # dtls callbacks
+
+    def _read(self, sender, data):
+        # ignoring sender: it's only _SENTINEL_*
+        # FIXME Previous lien. If Peer is find ,we send otherwise nothing.
+        print("RAFS: _read del server")
+        try:
+
+            message = Message.decode(data, self)
+        except error.UnparsableMessage:
+            print("SI SOY UN PENDEJO!")
+
+            self.log.warning("Server - Ignoring unparsable message from %s"%(address,))
+            return
+
+        self.main.new_message_callback(message)
+
+        return len(data)
+
+    def _write(self, recipient, data):
+        # ignoring recipient: it's only _SENTINEL_*
+        print("RAFS: _write del server")
+        try:
+            t = self._transport
+        except:
+            # tinydtls sends callbacks very very late during shutdown (ie.
+            # `hasattr` and `AttributeError` are all not available any more,
+            # and even if the DTLSClientConnection class had a ._transport, it
+            # would already be gone), and it seems even a __del__ doesn't help
+            # break things up into the proper sequence.
+            return 0
+        t.sendto(data)
+        return len(data)
+
+    def _event(self, level, code):
+        print("RAFS _event del server")
+        if (level, code) == (LEVEL_NOALERT, DTLS_EVENT_CONNECT):
+            print("DTLS-DEBUG: Client Connect")
+            return
+        elif (level, code) == (LEVEL_NOALERT, DTLS_EVENT_CONNECTED):
+            print("DTLS-DEBUG: Client handshake finished!")
+            self._connecting.set_result(True)
+        elif (level, code) == (LEVEL_FATAL, CODE_CLOSE_NOTIFY):
+            # FIXME how to shut down?
+            # FIXME(rfuentess) You can't. tinyDTLs should not send DTLS alerts.
+            pass
+        elif level == LEVEL_FATAL:
+            # FIXME how to shut down?
+            self.log.error("Fatal DTLS error: code %d", code)
+        else:
+            self.log.warning("Unhandled alert level %d code %d", level, code)
+
+    # transport protocol
+
+    def connection_lost(self, exc):
+        print("Oups, the connection was lost:", exc)
+
+    def error_received(self, exc):
+        if self._connecting.done():
+            self.log.warning("Error received in running connection: %s", exc)
+            # self._dtls_socket.resetPeer(self._connection)
+            # FIXME when the package was sent, shut down the socket and deregister
+        else:
+            self.log.warning("Error received before connection established: %s", exc)
+            # FIXME shut down immediately
+
+    def datagram_received(self, data, addr):
+        print("RAFS DTLS Server datagram_received")
+        self._dtls_socket.handleMessage(self._connection, data)
+
+    # Testing
+    def data_received(self, data):
+        print("RAFS DTLS Server data_received")
+        pass
