@@ -31,6 +31,19 @@ from ..util.asyncio import RecvmsgDatagramProtocol
 from ..util import hostportjoin
 from ..util import socknumbers
 
+from ..numbers import COAPS_PORT
+from DTLSSocket import dtls
+
+#DTLS Variables (FIXME Remove from aiocoap)
+DTLS_EVENT_CONNECT = 0x01DC
+DTLS_EVENT_CONNECTED = 0x01DE
+DTLS_EVENT_RENEGOTIATE = 0x01DF
+# from RFC 5246
+LEVEL_WARNING = 1
+LEVEL_FATAL = 2
+CODE_CLOSE_NOTIFY = 0
+LEVEL_NOALERT = 0 # seems only to be issued by tinydtls-internal events
+
 class UDP6EndpointAddress:
     """Remote address type for :cls:`TransportEndpointUDP6`. Remote address is
     stored in form of a socket address; local address can be roundtripped by
@@ -119,6 +132,10 @@ class SockExtendedErr(namedtuple("_SockExtendedErr", "ee_errno ee_origin ee_type
         # unpack_from: recvmsg(2) says that more data may follow
         return cls(*cls._struct.unpack_from(data))
 
+class DTLSSecurityStore:
+    def _get_psk(self, host, port):
+        return b"Client_identity", b"secretPSK"
+
 class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoint):
     def __init__(self, new_message_callback, new_error_callback, log, loop):
         self.new_message_callback = new_message_callback
@@ -128,7 +145,90 @@ class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoin
 
         self._shutting_down = None #: Future created and used in the .shutdown() method.
 
+        self.security = DTLSSecurityStore()
+        self._connecting = False
+
+        pskId, psk = self.security._get_psk("::1", COAPS_PORT) # FIXME
+
+        # dtls.setLogLevel(dtls.DTLS_LOG_DEBUG)
+        dtls.setLogLevel(dtls.DTLS_LOG_INFO)
+        # print("TinyDTLS Log level ",dtls.dtlsGetLogLevel() )
+        self._dtls_socket = dtls.DTLS(
+                read=self._dtls_read,   # FIXME
+                write=self._dtls_write, # FIXME
+                event=self._dtls_event, # FIXME
+                # event= None,
+                pskId=pskId,
+                pskStore={pskId: psk},
+                )
+
         self.ready = asyncio.Future() #: Future that gets fullfilled by connection_made (ie. don't send before this is done; handled by ``create_..._context``
+
+    # FIXME(rfuentess) Releasing memory is requried
+    def __del__(self):
+        try:
+            self._dtls_socket.dtls_free_context()
+        except:
+            return
+
+    def _dtls_event(self, level, code):
+        # print(" _dtls_event")
+        if (level, code) == (LEVEL_NOALERT, DTLS_EVENT_CONNECT):
+            print("DTLS-DEBUG: Client Connect")
+            self._connecting = False
+            return
+        elif (level, code) == (LEVEL_NOALERT, DTLS_EVENT_CONNECTED):
+            print("DTLS-DEBUG: Client handshake finished!")
+            self._connecting = True
+        elif (level, code) == (LEVEL_FATAL, CODE_CLOSE_NOTIFY):
+            # FIXME how to shut down?
+            # FIXME(rfuentess) You can't. tinyDTLs should not send DTLS alerts.
+            pass
+        elif level == LEVEL_FATAL:
+            # FIXME how to shut down?
+            self.log.error("Fatal DTLS error: code %d", code)
+        else:
+            self.log.warning("Unhandled alert level %d code %d", level, code)
+
+    def _dtls_write(self, recipient, data):
+        # print(" _dtls_write")
+
+        sock = self.transport._sock
+        # ancdata = []
+        # ancdata.append((socket.IPPROTO_IPV6, socket.IPV6_PKTINFO,
+        #                 message.remote.pktinfo))
+        try:
+            # self.send(data)
+            sock.sendto(data, recipient)
+        except:
+        #     # tinydtls sends callbacks very very late during shutdown (ie.
+        #     # `hasattr` and `AttributeError` are all not available any more,
+        #     # and even if the DTLSClientConnection class had a ._transport, it
+        #     # would already be gone), and it seems even a __del__ doesn't help
+        #     # break things up into the proper sequence.
+            return 0
+
+        return len(data)
+
+    def _dtls_read(self, sender, data):
+        # ignoring sender: it's only _SENTINEL_*
+        # FIXME Previous lien. If Peer is find ,we send otherwise nothing.
+        # print(" _dtls_read ")
+
+        self.log.info("potentially CoAP msg Received")
+
+        try:
+            pktinfo=None
+            sock = self.transport._sock
+            message = Message.decode(data, UDP6EndpointAddress(sender, pktinfo=pktinfo))
+            # message = Message.decode(data, sock)
+        except error.UnparsableMessage:
+            self.log.warning("Ignoring unparsable message from %s"%(sender,))
+            return
+
+        self.new_message_callback(message)
+
+        return len(data)
 
     @classmethod
     @asyncio.coroutine
@@ -205,10 +305,14 @@ class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoin
             else:
                 ancdata.append((socket.IPPROTO_IPV6, socket.IPV6_PKTINFO,
                     message.remote.pktinfo))
-        self.transport.sendmsg(message.encode(), ancdata, 0, message.remote.sockaddr)
+        # self.transport.sendmsg(message.encode(), ancdata, 0, message.remote.sockaddr)
+
+        self._dtls_socket.write(self._dtls_session,message.encode() )
+        # self._dtls_write(message.remote.sockaddr, message.encode())
 
     @asyncio.coroutine
     def determine_remote(self, request):
+
         if request.requested_scheme not in ('coap', None):
             return None
 
@@ -244,24 +348,34 @@ class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoin
 
     def connection_made(self, transport):
         """Implementation of the DatagramProtocol interface, called by the transport."""
+        # print(" UDP connection_made")
         self.ready.set_result(True)
         self.transport = transport
 
     def datagram_msg_received(self, data, ancdata, flags, address):
         """Implementation of the RecvmsgDatagramProtocol interface, called by the transport."""
+        print(" UDP (DTLS?) datagram_msg_received")
         pktinfo = None
-        for cmsg_level, cmsg_type, cmsg_data in ancdata:
-            if cmsg_level == socket.IPPROTO_IPV6 and cmsg_type == socket.IPV6_PKTINFO:
-                pktinfo = cmsg_data
-            else:
-                self.log.info("Received unexpected ancillary data to recvmsg: level %d, type %d, data %r", cmsg_level, cmsg_type, cmsg_data)
-        try:
-            message = Message.decode(data, UDP6EndpointAddress(address, pktinfo=pktinfo))
-        except error.UnparsableMessage:
-            self.log.warning("Ignoring unparsable message from %s"%(address,))
-            return
 
-        self.new_message_callback(message)
+        self._dtls_session = dtls.Session(address[0], address[1])
+        try:
+            # print
+            # _, _, data2, data2leng = self._dtls_socket.handleMessage(self._dtls_session, data)
+            self._dtls_socket.handleMessage(self._dtls_session, data)
+        # except (RuntimeError, TypeError, NameError):
+        #     # NOTE Don-t care about normal CoAP for now...
+        #     print( "\tCHANGOS! ", RuntimeError, TypeError, NameError)
+        #     return
+        except Exception as ex:
+            template = "An exception of type {0} occurred. Arguments:\n{1!r}"
+            message = template.format(type(ex).__name__, ex.args)
+            print (message)
+
+        # if not self._connecting:
+        #     return
+
+        return
+
 
     def datagram_errqueue_received(self, data, ancdata, flags, address):
         assert flags == socket.MSG_ERRQUEUE
@@ -292,6 +406,7 @@ class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoin
     def connection_lost(self, exc):
         # TODO better error handling -- find out what can cause this at all
         # except for a shutdown
+        print(" UDP connection_lost")
         if exc is not None:
             self.log.error("Connection lost: %s"%exc)
 
