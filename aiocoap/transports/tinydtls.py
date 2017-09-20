@@ -235,7 +235,6 @@ class TransportEndpointTinyDTLS(interfaces.TransportEndpoint):
     def determine_remote(self, request):
         if request.requested_scheme != 'coaps':
             return None
-        else:
 
         if request.unresolved_remote:
             pseudoparsed = urllib.parse.SplitResult(None, request.unresolved_remote, None, None, None)
