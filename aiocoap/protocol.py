@@ -506,7 +506,7 @@ class Context(interfaces.RequestProvider):
 
     @classmethod
     @asyncio.coroutine
-    def create_client_context(cls, *, dump_to=None, loggername="coap", loop=None):
+    def create_client_context(cls, *, dump_to=None, loggername="coap", loop=None, secure=False):
         """Create a context bound to all addresses on a random listening port.
 
         This is the easiest way to get an context suitable for sending client
@@ -522,7 +522,9 @@ class Context(interfaces.RequestProvider):
         from .transports.tinydtls import TransportEndpointTinyDTLS
 
         self.transport_endpoints.append((yield from TransportEndpointUDP6.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
-        self.transport_endpoints.append((yield from TransportEndpointTinyDTLS.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
+
+        if secure:
+            self.transport_endpoints.append((yield from TransportEndpointTinyDTLS.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
 
         return self
 
