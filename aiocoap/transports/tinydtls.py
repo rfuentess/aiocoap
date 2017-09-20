@@ -160,6 +160,7 @@ class DTLSClientConnection:
         pass # already handled in .start()
 
     def connection_lost(self, exc):
+        pass
 
     def error_received(self, exc):
         if self._connecting.done():
