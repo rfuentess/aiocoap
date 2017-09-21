@@ -272,8 +272,8 @@ class TransportEndpointUDP6(RecvmsgDatagramProtocol, interfaces.TransportEndpoin
 
     @classmethod
     @asyncio.coroutine
-    def create_client_transport_endpoint(cls, new_message_callback, new_error_callback, log, loop, dump_to):
-        return (yield from cls._create_transport_endpoint(new_message_callback, new_error_callback, log, loop, dump_to, None, multicast=False))
+    def create_client_transport_endpoint(cls, new_message_callback, new_error_callback, log, loop, dump_to, secure):
+        return (yield from cls._create_transport_endpoint(new_message_callback, new_error_callback, log, loop, dump_to, None, multicast=False, secure=secure))
 
     @classmethod
     @asyncio.coroutine

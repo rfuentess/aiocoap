@@ -521,12 +521,16 @@ class Context(interfaces.RequestProvider):
         from .transports.udp6 import TransportEndpointUDP6
         from .transports.tinydtls import TransportEndpointTinyDTLS
 
-        self.transport_endpoints.append((yield from TransportEndpointUDP6.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
-
-        if secure:
-            self.transport_endpoints.append((yield from TransportEndpointTinyDTLS.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
-
-        return self
+        self.transport_endpoints.append(
+            (yield from TransportEndpointUDP6.create_client_transport_endpoint(
+                    new_message_callback=self._dispatch_message,
+                    new_error_callback=self._dispatch_error,
+                    log=self.log, loop=loop, dump_to=dump_to, secure=secure)))
+        # print("\ncreate_client_context TEST  secure is " + str(secure) + "\n" )
+        # if secure:
+        #     self.transport_endpoints.append((yield from TransportEndpointTinyDTLS.create_client_transport_endpoint(new_message_callback=self._dispatch_message, new_error_callback=self._dispatch_error, log=self.log, loop=loop, dump_to=dump_to)))
+        #
+        # return self
 
     @classmethod
     @asyncio.coroutine
